@@ -1,0 +1,17 @@
+**/.idea/
+.idea
+*.mas
+**/.ipynb_checkpoints/*
+**/__pycache__/*
+core/
+*.dio
+utils_deprecated/
+
+*.pt
+*.pyc
+*/.DS_Store
+.DS_Store
+
+*.bin
+*.ckpt
+
