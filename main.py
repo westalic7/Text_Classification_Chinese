@@ -4,7 +4,7 @@ import os
 import sys
 import torch
 from model import MODELS_FILTER
-from preprocess import read_data_file, ClassificationProcessor
+from utils.preprocess import read_data_file, ClassificationProcessor
 from sklearn.metrics import precision_recall_fscore_support, accuracy_score
 from torch.utils.data.dataloader import DataLoader
 from utils.dataset import ClassificationDataSet
@@ -13,28 +13,37 @@ from utils.logger import LoggerClass
 rootPath = os.path.abspath(os.path.dirname(__file__))
 sys.path.append(rootPath)
 
-logger = LoggerClass(__name__, logger_file=f'./checkpoint/{int(time.time())}train.log')
-
 class DefaultConfig:
     def __init__(self):
+        # debug mode
         self.DEBUG = True
+        self.data_debug_samples_rate = 0.1 if self.DEBUG else 1
+
+        # train parameters
+        self.data_path ='./data/cnews/'
         self.model_name = 'cnn'
         self.seq_len = 200
         self.embd_len = 100
         self.batch_size = 256
         self.train_epochs = 5
         self.lr = 1E-3
-        self.data_path ='./data/cnews/'
-        self.data_debug_samples_rate = 0.1
         self.loss_fn = torch.nn.CrossEntropyLoss()
-        logger.info(f'Model name: {self.model_name}')
-        logger.info(f'Data dir: {self.data_path}')
+
+        # log
+        self.logger = LoggerClass('log', logger_file='./checkpoint/train_{}_{}_{}_{}.log'.format(
+            self.model_name,
+            self.seq_len,
+            self.embd_len,
+            int(time.time())
+        ))
+        self.logger.info(f'Model name: {self.model_name}')
+        self.logger.info(f'Data dir: {self.data_path}')
 
 
-class Trainer(DefaultConfig):
+class TextClassification(DefaultConfig):
 
     def __init__(self):
-        super(Trainer, self).__init__()
+        super(TextClassification, self).__init__()
         self.model_func = MODELS_FILTER[self.model_name]
         self.pretrain_model_path = f'./checkpoint/checkpoint_{self.model_func.__name__}.pt'
         self.save_model_path = f'./checkpoint/checkpoint_{self.model_func.__name__}.pt'
@@ -46,19 +55,43 @@ class Trainer(DefaultConfig):
 
     def prepare_dataset(self):
         """
-        加载数据集，数据预处理
+        加载并缓存数据集，数据预处理
         """
-        train_x, train_y = read_data_file(os.path.join(self.data_path, 'cnews.{}.txt'.format('train')),
-                                          self.data_debug_samples_rate)
-        test_x, test_y = read_data_file(os.path.join(self.data_path, 'cnews.{}.txt'.format('test')),
-                                        self.data_debug_samples_rate)
-        self.clfp.analyze_corpus(train_x + test_x, train_y + test_y)
-        logger.info(f'Analyze corpus, token2idx get token nums: {len(self.clfp.token2idx)}')
-        train_x, train_y = self.clfp.process_x_dataset(train_x), self.clfp.process_y_dataset(train_y)
-        test_x, test_y = self.clfp.process_x_dataset(test_x), self.clfp.process_y_dataset(test_y)
+        cached_train_file = os.path.join(self.data_path, 'cached_cls-{}-{}-{}'.format(
+            self.data_path.split('/')[-2], self.seq_len, 'train'))
+        cached_test_file = os.path.join(self.data_path, 'cached_cls-{}-{}-{}'.format(
+            self.data_path.split('/')[-2], self.seq_len, 'test'))
+        cached_token2idx_file = os.path.join(self.data_path, 'cached_cls-{}-{}-{}'.format(
+            self.data_path.split('/')[-2], self.seq_len, 'token2idx'))
+        if os.path.exists(cached_train_file) and os.path.exists(cached_test_file):
+            self.logger.info("Loading datasets from cached file %s", cached_train_file)
+            _train_dataset = torch.load(cached_train_file)
+            self.logger.info("Loading datasets from cached file %s", cached_test_file)
+            _test_dataset = torch.load(cached_test_file)
+            self.logger.info("Loading token2idx from cached file %s", cached_token2idx_file)
+            self.clfp.token2idx = torch.load(cached_token2idx_file)
+        else:
+            self.logger.info("Loading datasets from datasets file.")
+            train_x, train_y = read_data_file(os.path.join(self.data_path, 'cnews.{}.txt'.format('train')),
+                                              self.data_debug_samples_rate)
+            test_x, test_y = read_data_file(os.path.join(self.data_path, 'cnews.{}.txt'.format('test')),
+                                            self.data_debug_samples_rate)
+            self.clfp.analyze_corpus(train_x + test_x, train_y + test_y)
+            self.logger.info(f'Analyze corpus, token2idx get token nums: {len(self.clfp.token2idx)}')
+            train_x, train_y = self.clfp.process_x_dataset(train_x), self.clfp.process_y_dataset(train_y)
+            test_x, test_y = self.clfp.process_x_dataset(test_x), self.clfp.process_y_dataset(test_y)
 
-        _train_dataset = ClassificationDataSet(train_x, train_y)
-        _test_dataset = ClassificationDataSet(test_x, test_y)
+            _train_dataset = ClassificationDataSet(train_x, train_y)
+            _test_dataset = ClassificationDataSet(test_x, test_y)
+
+            self.logger.info("Saving datasets into cached file %s", cached_train_file)
+            torch.save(_train_dataset, cached_train_file)
+            self.logger.info("Saving datasets into cached file %s", cached_test_file)
+            torch.save(_test_dataset, cached_test_file)
+            self.logger.info("Saving token2idx into cached file %s", cached_token2idx_file)
+            torch.save(self.clfp.token2idx, cached_token2idx_file)
+
+        self.token2idx = self.clfp.token2idx
         self.train_data_loader = DataLoader(dataset=_train_dataset,
                                             batch_size=self.batch_size,
                                             shuffle=True)
@@ -85,16 +118,16 @@ class Trainer(DefaultConfig):
             model_dict_training = self._model.state_dict()
             model_dict_pretrained = torch.load(self.pretrain_model_path, map_location=self.device, )
             pretrained_dict = {k: v for k, v in model_dict_pretrained.items() if k in model_dict_training}
-            logger.info('Embedding layer info: {}'.format(pretrained_dict['embedding_layer.weight'].shape))
+            self.logger.info('Embedding layer info: {}'.format(pretrained_dict['embedding_layer.weight'].shape))
             # 更新现有的model_dict
             model_dict_training.update(pretrained_dict)
             # 加载我们真正需要的state_dict
             self._model.load_state_dict(model_dict_training)
         else:
-            logger.info('Checkpoint not found, training from initial!')
+            self.logger.info('Checkpoint not found, training from initial!')
 
         self._model.to(self.device)
-        logger.info(self._model)
+        self.logger.info(self._model)
 
         # 冻结不需要训练的层
         for param in self._model.parameters():
@@ -102,7 +135,7 @@ class Trainer(DefaultConfig):
         for param in self._model.embedding_layer.parameters():
             param.requires_grad = True
         params_info = get_parameter_number(self._model)
-        logger.info(f'Parameters info: {params_info}')
+        self.logger.info(f'Parameters info: {params_info}')
 
     def prepare_optimizer(self):
         """
@@ -178,7 +211,7 @@ class Trainer(DefaultConfig):
             else:
                 update_flag = ' '
 
-            logger.info("| epoch: {:2d} "
+            self.logger.info("| epoch: {:2d} "
                   "| - train -| loss: {:4.4f}| f1: {:.4f} | acc: {:.4f} "
                   "| - valid -| loss: {:4.4f}| f1: {:.4f} | acc: {:.4f} | {}".format(epc + 1,
                                                                                      train_loss_avg,
@@ -229,10 +262,12 @@ class Trainer(DefaultConfig):
 def get_parameter_number(net):
     # print(type(net.parameters()))
     total_num = sum(p.numel() for p in net.parameters())
+    # for p in net.parameters():
+    #     print(p.shape, p.numel())
     trainable_num = sum(p.numel() for p in net.parameters() if p.requires_grad)
     return {'Total': total_num, 'Trainable': trainable_num}
 
 
 if __name__ == "__main__":
-    t = Trainer()
-    t.train()
+    tcls = TextClassification()
+    tcls.train()
