@@ -8,11 +8,11 @@ import six
 import tqdm
 
 
-def read_data_file(path, devide_rate=1, top_sampler=False):
+def read_data_file(path, devide_rate=1, top_sampler=False, tokenizer='bertVocab'):
     lines = open(path, 'r', encoding='utf-8').read().splitlines()
     # subset index
     samples_num = len(lines)
-    devide_part = 1/devide_rate
+    devide_part = 1 / devide_rate
     sub_index = np.array(range(samples_num))
     if top_sampler:
         # top 1/n
@@ -28,7 +28,12 @@ def read_data_file(path, devide_rate=1, top_sampler=False):
         rows = line.split('\t')
         if len(rows) >= 2:
             y_list.append(rows[0])
-            x_list.append(list(jieba.cut('\t'.join(rows[1:]))))
+            if tokenizer == 'bertVocab':
+                x_list.append([x for x in '\t'.join(rows[1:])])
+            elif tokenizer == 'wordCount':
+                x_list.append(list(jieba.cut('\t'.join(rows[1:]))))
+            else:
+                raise Exception('wrong tokenizer')
         else:
             # print(rows)
             pass

@@ -3,8 +3,11 @@ import time
 import os
 import sys
 import torch
+import random
+import numpy as np
+from tqdm import tqdm
 from model import MODELS_FILTER
-from utils.preprocess import read_data_file, ClassificationProcessor
+from utils.preprocess import read_data_file, BertClassificationProcessor, ClassificationProcessor
 from sklearn.metrics import precision_recall_fscore_support, accuracy_score
 from torch.utils.data.dataloader import DataLoader
 from utils.dataset import ClassificationDataSet
@@ -13,19 +16,27 @@ from utils.logger import LoggerClass
 rootPath = os.path.abspath(os.path.dirname(__file__))
 sys.path.append(rootPath)
 
+Processor = {
+    'bertVocab': BertClassificationProcessor,
+    'wordCount': ClassificationProcessor
+}
+
+
 class DefaultConfig:
     def __init__(self):
         # debug mode
-        self.DEBUG = True
+        self.DEBUG = False
         self.data_debug_samples_rate = 0.1 if self.DEBUG else 1
 
         # train parameters
-        self.data_path ='./data/cnews/'
+        self.random_seed = 1234
+        self.data_path = './data/cnews/'
+        self.processor_type = 'bertVocab'
         self.model_name = 'cnn'
-        self.seq_len = 200
+        self.seq_len = 100
         self.embd_len = 100
         self.batch_size = 256
-        self.train_epochs = 5
+        self.train_epochs = 40
         self.lr = 1E-3
         self.loss_fn = torch.nn.CrossEntropyLoss()
 
@@ -45,24 +56,38 @@ class TextClassification(DefaultConfig):
     def __init__(self):
         super(TextClassification, self).__init__()
         self.model_func = MODELS_FILTER[self.model_name]
+        self.load_embedding_only = False  # 只加载模型Embedding层
+        self.train_embedding = True  # 是否训练Embedding层
+        # self.pretrain_model_path = f'./checkpoint/fc8765.checkpoint_BaseEmbedding_Model.pt'  # 预训练Embedding模型地址，
         self.pretrain_model_path = f'./checkpoint/checkpoint_{self.model_func.__name__}.pt'
         self.save_model_path = f'./checkpoint/checkpoint_{self.model_func.__name__}.pt'
-        self.clfp = ClassificationProcessor(sequence_length=self.seq_len)  # 数据处理过程定义seq_len，模型中不需要再定义
+        self.clfp = Processor[self.processor_type](sequence_length=self.seq_len,
+                                                   vocab_path='./utils/vocab.txt')  # 数据处理过程定义seq_len，模型中不需要再定义
+
+        self.set_seed(self.random_seed)
         self.prepare_dataset()
         self.prepare_model()
+        self.freeze_layers()
         self.prepare_optimizer()
 
+    @classmethod
+    def set_seed(cls, seed):
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
 
     def prepare_dataset(self):
         """
         加载并缓存数据集，数据预处理
         """
-        cached_train_file = os.path.join(self.data_path, 'cached_cls-{}-{}-{}'.format(
-            self.data_path.split('/')[-2], self.seq_len, 'train'))
-        cached_test_file = os.path.join(self.data_path, 'cached_cls-{}-{}-{}'.format(
-            self.data_path.split('/')[-2], self.seq_len, 'test'))
-        cached_token2idx_file = os.path.join(self.data_path, 'cached_cls-{}-{}-{}'.format(
-            self.data_path.split('/')[-2], self.seq_len, 'token2idx'))
+        cached_train_file = os.path.join(self.data_path, 'cached_cls-{}-{}-{}-{}'.format(
+            self.data_path.split('/')[-2], self.processor_type, self.seq_len, 'train'))
+        cached_test_file = os.path.join(self.data_path, 'cached_cls-{}-{}-{}-{}'.format(
+            self.data_path.split('/')[-2], self.processor_type, self.seq_len, 'test'))
+        cached_token2idx_file = os.path.join(self.data_path, 'cached_cls-{}-{}-{}-{}'.format(
+            self.data_path.split('/')[-2], self.processor_type, self.seq_len, 'token2idx'))
         if os.path.exists(cached_train_file) and os.path.exists(cached_test_file):
             self.logger.info("Loading datasets from cached file %s", cached_train_file)
             _train_dataset = torch.load(cached_train_file)
@@ -78,18 +103,25 @@ class TextClassification(DefaultConfig):
                                             self.data_debug_samples_rate)
             self.clfp.analyze_corpus(train_x + test_x, train_y + test_y)
             self.logger.info(f'Analyze corpus, token2idx get token nums: {len(self.clfp.token2idx)}')
-            train_x, train_y = self.clfp.process_x_dataset(train_x), self.clfp.process_y_dataset(train_y)
-            test_x, test_y = self.clfp.process_x_dataset(test_x), self.clfp.process_y_dataset(test_y)
-
-            _train_dataset = ClassificationDataSet(train_x, train_y)
-            _test_dataset = ClassificationDataSet(test_x, test_y)
-
-            self.logger.info("Saving datasets into cached file %s", cached_train_file)
-            torch.save(_train_dataset, cached_train_file)
-            self.logger.info("Saving datasets into cached file %s", cached_test_file)
-            torch.save(_test_dataset, cached_test_file)
             self.logger.info("Saving token2idx into cached file %s", cached_token2idx_file)
             torch.save(self.clfp.token2idx, cached_token2idx_file)
+
+            def save_cached(dataset_x, dataset_y, datatype='train'):
+                dataset_x, dataset_y = self.clfp.process_x_dataset(dataset_x), self.clfp.process_y_dataset(dataset_y)
+                _dataset = ClassificationDataSet(dataset_x, dataset_y)
+                del dataset_x, dataset_y
+
+                if datatype == 'train':
+                    self.logger.info("Saving datasets into cached file %s", cached_train_file)
+                    torch.save(_dataset, cached_train_file)
+                else:
+                    self.logger.info("Saving datasets into cached file %s", cached_test_file)
+                    torch.save(_dataset, cached_test_file)
+
+                return _dataset
+
+            _train_dataset = save_cached(train_x, train_y, 'train')
+            _test_dataset = save_cached(test_x, test_y, 'test')
 
         self.token2idx = self.clfp.token2idx
         self.train_data_loader = DataLoader(dataset=_train_dataset,
@@ -100,13 +132,12 @@ class TextClassification(DefaultConfig):
 
     def prepare_model(self):
         """
-        加载模型，冻结参数（可选）
+        加载模型，或只加载Embedding层权重
         """
         # 判断设备类型gpu或cpu
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        if self.device =='cuda':
-            torch.backends.cudnn.deterministic = True
-
+        torch.backends.cudnn.deterministic = True if self.device == 'cuda' else False
+        self.logger.info(f'Device: {self.device}')
         # 加载模型
         self._model = self.model_func(seq_len=self.seq_len,
                                       embed_len=self.embd_len,
@@ -117,7 +148,14 @@ class TextClassification(DefaultConfig):
             #                                        map_location=self._map_location,))
             model_dict_training = self._model.state_dict()
             model_dict_pretrained = torch.load(self.pretrain_model_path, map_location=self.device, )
-            pretrained_dict = {k: v for k, v in model_dict_pretrained.items() if k in model_dict_training}
+            if self.load_embedding_only:
+                pretrained_dict = {k: v for k, v in model_dict_pretrained.items()
+                                   if k in model_dict_training and k == 'embedding_layer.weight'}
+            else:
+                pretrained_dict = {k: v for k, v in model_dict_pretrained.items() if k in model_dict_training}
+
+            self.logger.info(f'Pretrain model: {self.pretrain_model_path}')
+            self.logger.info('Checkpoint found, continue training!')
             self.logger.info('Embedding layer info: {}'.format(pretrained_dict['embedding_layer.weight'].shape))
             # 更新现有的model_dict
             model_dict_training.update(pretrained_dict)
@@ -129,11 +167,15 @@ class TextClassification(DefaultConfig):
         self._model.to(self.device)
         self.logger.info(self._model)
 
+    def freeze_layers(self):
+        """
+         冻结参数（可选）
+         """
         # 冻结不需要训练的层
         for param in self._model.parameters():
             param.requires_grad = True
         for param in self._model.embedding_layer.parameters():
-            param.requires_grad = True
+            param.requires_grad = self.train_embedding
         params_info = get_parameter_number(self._model)
         self.logger.info(f'Parameters info: {params_info}')
 
@@ -150,10 +192,11 @@ class TextClassification(DefaultConfig):
         # optimizer = torch.optim.Adamax(self._model.parameters())
         # optimizer = torch.optim.AdamW(self._model.parameters())
         # optimizer = torch.optim.Rprop(self._model.parameters())
-        # optimizer = torch.optim.SparseAdam(self._model.parameters())
         """
-        self.optimizer = torch.optim.Rprop(filter(lambda p: p.requires_grad, self._model.parameters()))
-
+        # self.optimizer = torch.optim.RMSprop(filter(lambda p: p.requires_grad, self._model.parameters()), alpha=0.9)
+        self.optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, self._model.parameters()), lr=self.lr,
+                                          betas=(0.9, 0.99))
+        # self.optimizer = torch.optim.SGD(filter(lambda p: p.requires_grad, self._model.parameters()), lr=self.lr, momentum=0.8)
 
     def train(self):
 
@@ -165,7 +208,7 @@ class TextClassification(DefaultConfig):
             total_loss = 0.
             total_num = 0.
 
-            for batch_idx, batch_data in enumerate(self.train_data_loader):
+            for batch_idx, batch_data in tqdm(enumerate(self.train_data_loader), desc=f'Train:: Epoch {epc}:'):
                 text_index, target = batch_data
                 text_index = text_index.to(self.device)
                 target = target.to(self.device)
@@ -212,15 +255,15 @@ class TextClassification(DefaultConfig):
                 update_flag = ' '
 
             self.logger.info("| epoch: {:2d} "
-                  "| - train -| loss: {:4.4f}| f1: {:.4f} | acc: {:.4f} "
-                  "| - valid -| loss: {:4.4f}| f1: {:.4f} | acc: {:.4f} | {}".format(epc + 1,
-                                                                                     train_loss_avg,
-                                                                                     train_f1,
-                                                                                     train_acc,
-                                                                                     valid_loss_avg,
-                                                                                     valid_f1,
-                                                                                     valid_acc,
-                                                                                     update_flag))
+                             "| - train -| loss: {:4.4f}| f1: {:.4f} | acc: {:.4f} "
+                             "| - valid -| loss: {:4.4f}| f1: {:.4f} | acc: {:.4f} | {}".format(epc + 1,
+                                                                                                train_loss_avg,
+                                                                                                train_f1,
+                                                                                                train_acc,
+                                                                                                valid_loss_avg,
+                                                                                                valid_f1,
+                                                                                                valid_acc,
+                                                                                                update_flag))
 
     def validation(self, ):
         """
@@ -232,7 +275,7 @@ class TextClassification(DefaultConfig):
         total_true = []
         total_loss = 0.
         total_num = 0.
-        for batch_idx, batch_data in enumerate(self.valid_data_loader):
+        for batch_idx, batch_data in tqdm(enumerate(self.valid_data_loader), desc='Valid:'):
             text_index, target = batch_data
             text_index = text_index.to(self.device)
             target = target.to(self.device)
@@ -255,15 +298,11 @@ class TextClassification(DefaultConfig):
                                                       labels=list(set(total_true)),
                                                       average='weighted')
         acc = accuracy_score(total_true, total_pred)
-        # print(classification_report(total_true,total_pred, digits=3))
         return f1, acc, avgloss
 
 
 def get_parameter_number(net):
-    # print(type(net.parameters()))
     total_num = sum(p.numel() for p in net.parameters())
-    # for p in net.parameters():
-    #     print(p.shape, p.numel())
     trainable_num = sum(p.numel() for p in net.parameters() if p.requires_grad)
     return {'Total': total_num, 'Trainable': trainable_num}
 

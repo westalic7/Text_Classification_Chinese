@@ -8,6 +8,7 @@ from typing import List, Optional, Union, Dict, Any
 
 import numpy as np
 from sklearn.preprocessing import MultiLabelBinarizer
+
 # self-build
 from utils.dataloader import read_data_file, get_list_subset, pad_sequences
 
@@ -157,6 +158,7 @@ class ClassificationProcessor(object):
         for seq in sequences:
             if self.add_bos_eos:
                 seq = [self.token_bos] + seq + [self.token_eos]
+            # print(self.token2idx)
             # print('seq',seq)
             unk_index = self.token2idx[self.token_unk]
             result.append([self.token2idx.get(token, unk_index) for token in seq])
@@ -184,22 +186,88 @@ class ClassificationProcessor(object):
             return [self.idx2label[label] for label in sequences]
 
 
-if __name__ == '__main__':
-    DATAPATH = './data/cnews/'
-    # test_x, test_y = read_data_file(os.path.join(DATAPATH, 'cnews.test.txt'), 100)
-    # train_x, train_y = read_data_file(os.path.join(DATAPATH, 'cnews.train.txt'), 100)
-    val_x, val_y = read_data_file(os.path.join(DATAPATH, 'cnews.val.txt'), 100)
+class BertClassificationProcessor(ClassificationProcessor):
 
-    p = ClassificationProcessor(sequence_length=100,
-                                add_bos_eos=False)
+    def __init__(self, multi_label=False, **kwargs):
+        self.vocab_path = kwargs.get('vocab_path', '../data/cnews2/vocab.txt')
+        super(ClassificationProcessor, self).__init__()
+
+        self.token2idx: Dict[str, int] = kwargs.get('token2idx', {})
+        self.idx2token: Dict[int, str] = dict([(v, k) for (k, v) in self.token2idx.items()])
+
+        self.token2count: Dict = {}
+
+        self.label2idx: Dict[str, int] = kwargs.get('label2idx', {})
+        self.idx2label: Dict[int, str] = dict([(v, k) for (k, v) in self.label2idx.items()])
+
+        self.token_pad: str = kwargs.get('token_pad', '[PAD]')
+        self.token_unk: str = kwargs.get('token_unk', '[UNK]')
+        self.token_bos: str = kwargs.get('token_bos', '[CLS]')
+        self.token_eos: str = kwargs.get('token_eos', '[SEP]')
+
+        self.dataset_info: Dict[str, Any] = kwargs.get('dataset_info', {})
+
+        self.add_bos_eos: bool = kwargs.get('add_bos_eos', False)
+
+        self.sequence_length = kwargs.get('sequence_length', None)
+
+        self.min_count = kwargs.get('min_count', 3)
+
+        # classification
+        self.multi_label = multi_label
+        self.multi_label_binarizer: MultiLabelBinarizer = None
+
+    @classmethod
+    def load_from_vocab_file(cls, vocab_path: str):
+        token2idx: Dict[str, int] = {}
+        with open(vocab_path, 'r') as reader:
+            for line in reader.readlines():
+                token = line.strip()
+                token2idx[token] = len(token2idx)
+        return token2idx
+
+    def analyze_corpus(self,
+                       corpus: Union[List[List[str]]],
+                       labels: Union[List[List[str]], List[str]],
+                       force: bool = False):
+
+        if len(self.token2idx) == 0 or force:
+            self._build_token_dict(corpus)
+        if len(self.label2idx) == 0 or force:
+            self._build_label_dict(labels)
+
+    def _build_token_dict(self, corpus: List[List[str]]):
+        """
+        Build token index dictionary using bert vocab file
+        """
+        self.token2idx = self.load_from_vocab_file(self.vocab_path)
+        self.idx2token = dict([(value, key)
+                               for key, value in self.token2idx.items()])
+        logging.debug(f"build token2idx dict finished, contains {len(self.token2idx)} tokens.")
+        self.dataset_info['token_count'] = len(self.token2idx)
+
+    def process_x_dataset(self,
+                          data: List[List[str]],
+                          max_len: Optional[int] = None,
+                          subset: Optional[List[int]] = None) -> np.ndarray:
+        if max_len is None:
+            max_len = self.sequence_length
+        target = [x for x in data]
+        numerized_samples = self.numerize_token_sequences(target)
+
+        return pad_sequences(numerized_samples, max_len, padding='post', truncating='post')
+
+
+if __name__ == '__main__':
+    DATAPATH = '../data/cnews/'
+
+    val_x, val_y = read_data_file(os.path.join(DATAPATH, 'cnews.sample.txt'), 100, tokenizer='bert_vocab')
+    p = BertClassificationProcessor(sequence_length=100, add_bos_eos=False)
 
     p.analyze_corpus(val_x, val_y)
     x_idx = p.process_x_dataset(val_x)
     y_idx = p.process_y_dataset(val_y)
 
-    # print(val_x[0])
-    print(x_idx)
-    print(type(x_idx))
-    # print(val_y[0])
+    print(val_x[0])
+    print(x_idx[0])
     print(y_idx[0])
-    print(x_idx.shape)

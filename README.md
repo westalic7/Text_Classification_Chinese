@@ -1,17 +1,37 @@
 # Text_Classification_Chinese
-基于Pytorch实现的CNN、RNN、TextCNN、FastText等模型,以及一个在CPU/GPU上测试过的训练器。
+基于Pytorch实现的CNN、RNN、RCNN、TextCNN等模型，可快速开始模型训练。
 
-## 介绍
-- 所有模型输入、输出相同，可由参数进行配置
-- 原始数据经过分词，以tokenizer转换为id
-- 数据预处理过程和部分模型结构改自[1]
+## 项目简介
+1. 所有模型使用相同输入输出，可配置参数自由切换
+2. 提供预处理过程，转换原始数据到idx，通过模型训练词嵌入
+3. 训练通用的嵌入层，冻结嵌入层，微调编码层
 
 ## 测试环境
-python 3.7  
-pytorch 1.7
+- python 3.7
+- pytorch 1.6
+- sklearn
 
-## 快速开始
-python main.py
+## 测试结果
 
-## 参考
-[1]https://github.com/BrikerMan/Kashgari
+**Cnews**
+
+1. 测试数据集包含10类标签，每类标签数据量相同，训练集50000，验证集 10000
+2. 训练通用的嵌入层，冻结嵌入层对不同模型进行微调，同时控制编码层参数量
+
+| Model          | Acc    | Parameters（Trainable） |
+| -------------- | ------ | ----------------------- |
+| Embed(with FC) | 0.8765 | 2113810(2112800/1010)   |
+| CNN            | 0.9219 | 179350                  |
+| RNN            | 0.9184 | 179210                  |
+| CRNN(GRU)      | 0.9147 | 170826                  |
+| TextCNN        | 0.9453 | 184842                  |
+| AVCNN          | 0.9308 | 184298                  |
+| TextRNN        | 0.9262 | 180210                  |
+| AttentionRNN   | 0.9136 | 183610                  |
+| DeepCNN        | 0.9277 | 176802                  |
+
+## Todo
+
+1. 其他类型数据集
+2. 其他Embedding方案
+3. 其他模型架构

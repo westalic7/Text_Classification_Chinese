@@ -1,37 +1,41 @@
 # -*- coding:utf-8 -*-
 
 import torch
-from torch import nn
 import torch.nn.functional as F
+from torch import nn
+
 from dropout.Spatial_Dropout import Spatial_Dropout
 from layer.Attention_Rnn import Attention_Rnn
 
-class AVCNN_Model(nn.Module):
 
+class AVCNN_Model(nn.Module):
     model_name = "AVCNN_Model"
     """
     model arc
         state: perform bad
     """
+
     def __init__(self, seq_len, embed_len, token2idx_len):
         super(AVCNN_Model, self).__init__()
         self.embedding_layer = nn.Embedding(num_embeddings=token2idx_len, embedding_dim=embed_len)
-        self.spacial_dropout = Spatial_Dropout(drop_prob=0.25)
-
-        self.conv1d_all = nn.ModuleList([nn.Conv1d(embed_len,300,kernel_size=i+1) for i in range(4)])
+        self.spacial_dropout = Spatial_Dropout(drop_prob=0.2)
+        self.cnn_channel = 64
+        self.output_channel = 128
+        self.dropout_rate = 0.5
+        self.conv1d_all = nn.ModuleList([nn.Conv1d(embed_len, self.cnn_channel, kernel_size=i + 1) for i in range(4)])
 
         self.feature_layers_all = nn.ModuleList([nn.AdaptiveMaxPool1d(1),
-                                   Attention_Rnn(sequence_dim=2),
-                                   nn.AdaptiveAvgPool1d(1)])
+                                                 Attention_Rnn(sequence_dim=2),
+                                                 nn.AdaptiveAvgPool1d(1)])
 
-        self.dense_layer0 = nn.Linear(3600, 144)
-        self.dense_layer1 = nn.Linear(144, 10)
+        self.dense_layer0 = nn.Linear(self.cnn_channel * 4 * 3, self.output_channel)
+        self.dense_layer1 = nn.Linear(self.output_channel, 10)
 
     def forward(self, x):
         # tree node 0
         x = self.embedding_layer(x.long())  # embedding: sequence-dim=1, input:[batch_size, sequence_len, embedding_len]
         x = x.permute(0, 2, 1)
-        x = self.spacial_dropout(x)  # spacial_dropout: sequence-dim=2
+        # x = self.spacial_dropout(x)  # spacial_dropout: sequence-dim=2
 
         # tree node 1: cnn
         tensors_feature_all = []
@@ -49,7 +53,8 @@ class AVCNN_Model(nn.Module):
         # print(tensor_feature_all.shape)
 
         # tree node 2
-        x = F.dropout(tensor_feature_all, p=0.7)
+        x = tensor_feature_all
+        x = F.dropout(x, p=self.dropout_rate)
         x = F.relu(self.dense_layer0(x))
         x = self.dense_layer1(x)
 

@@ -16,7 +16,7 @@ class BILSTM_Attention_Model(nn.Module):
         super(BILSTM_Attention_Model, self).__init__()
 
         self.embedding_layer = nn.Embedding(token2idx_len, embed_len)
-        self.n_hidden = 10
+        self.n_hidden = 108
         self.num_classes = 10
         self.lstm = nn.LSTM(embed_len, self.n_hidden, bidirectional=True)
         self.out = nn.Linear(self.n_hidden * 2, self.num_classes)
@@ -29,16 +29,20 @@ class BILSTM_Attention_Model(nn.Module):
         soft_attn_weights = F.softmax(attn_weights, 1)
         # [batch_size, n_hidden * num_directions(=2), n_step] * [batch_size, n_step, 1] = [batch_size, n_hidden * num_directions(=2), 1]
         context = torch.bmm(lstm_output.transpose(1, 2), soft_attn_weights.unsqueeze(2)).squeeze(2)
-        return context, soft_attn_weights.data.numpy()  # context : [batch_size, n_hidden * num_directions(=2)]
+        return context, soft_attn_weights  # context : [batch_size, n_hidden * num_directions(=2)]
 
     def forward(self, x):
         input = self.embedding_layer(x.long())  # input : [batch_size, len_seq, embedding_dim]
         input = input.permute(1, 0, 2)  # input : [len_seq, batch_size, embedding_dim]
 
-        hidden_state = torch.autograd.Variable(torch.zeros(1 * 2, len(x), self.n_hidden),
-                                               requires_grad=True)  # [num_layers(=1) * num_directions(=2), batch_size, n_hidden]
-        cell_state = torch.autograd.Variable(torch.zeros(1 * 2, len(x), self.n_hidden),
-                                             requires_grad=True)  # [num_layers(=1) * num_directions(=2), batch_size, n_hidden]
+        hidden_state = torch.zeros(1 * 2, len(x), self.n_hidden,
+                                   requires_grad=True)  # [num_layers(=1) * num_directions(=2), batch_size, n_hidden]
+        cell_state = torch.zeros(1 * 2, len(x), self.n_hidden,
+                                 requires_grad=True)  # [num_layers(=1) * num_directions(=2), batch_size, n_hidden]
+
+        if torch.cuda.is_available():
+            hidden_state = hidden_state.cuda()
+            cell_state = cell_state.cuda()
 
         # final_hidden_state, final_cell_state : [num_layers(=1) * num_directions(=2), batch_size, n_hidden]
         output, (final_hidden_state, final_cell_state) = self.lstm(input, (hidden_state, cell_state))

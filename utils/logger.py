@@ -20,14 +20,14 @@ class LoggerClass(object):
         handler.setFormatter(formatter)
         handler.setLevel(level)
 
-        # console = logging.StreamHandler()
-        # console.setFormatter(formatter)
-        # console.setLevel(level)
+        console = logging.StreamHandler()
+        console.setFormatter(formatter)
+        console.setLevel(level)
 
         logger = logging.getLogger(logger_name)
         logger.setLevel(logging.INFO)
         logger.addHandler(handler)
-        # logger.addHandler(console)
+        logger.addHandler(console)
 
         return logger
 
